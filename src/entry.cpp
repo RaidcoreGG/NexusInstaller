@@ -688,13 +688,18 @@ bool CreateDeviceD3D(HWND hWnd)
 
 	static PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN createDeviceAndSwapChain_func = 0;
 
-	HMODULE d3d11lib = LoadLibrary("d3d11.dll");
-	FindFunction(d3d11lib, &createDeviceAndSwapChain_func, "D3D11CreateDeviceAndSwapChain");
+	//NOTE(Rennorb): Specifically look for d3d11.dll in the windows directory, so we avoid accidentally loading nexus into the installer.
+	char buffer[1024];
+	UINT winDirLen = GetWindowsDirectoryA(buffer, sizeof(buffer));
+	if(!winDirLen) return -1;
 
-	if (!createDeviceAndSwapChain_func)
-	{
-		return -1;
-	}
+	snprintf(buffer + winDirLen, sizeof(buffer) - winDirLen, "/System32/d3d11.dll");
+	
+	HMODULE d3d11lib = LoadLibraryA(buffer);
+	if(!d3d11lib) return -1;
+
+	FindFunction(d3d11lib, &createDeviceAndSwapChain_func, "D3D11CreateDeviceAndSwapChain");
+	if (!createDeviceAndSwapChain_func) return -1;
 
 	if (createDeviceAndSwapChain_func(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, createDeviceFlags, featureLevelArray, 2, D3D11_SDK_VERSION, &sd, &SwapChain, &Device, &featureLevel, &DeviceContext) != S_OK)
 		return false;
