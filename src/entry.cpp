@@ -30,7 +30,15 @@ struct Texture
 	ID3D11ShaderResourceView* Resource;
 };
 
+struct FileInfo
+{
+	std::string ProductName;
+	std::string Description;
+};
+
 static Texture*					Background			= nullptr;
+static ImFont*					Font				= nullptr;
+static ImFont*					BoldFont			= nullptr;
 
 static ID3D11Device*			Device				= nullptr;
 static ID3D11DeviceContext*		DeviceContext		= nullptr;
@@ -39,8 +47,9 @@ static ID3D11RenderTargetView*	RenderTargetView	= nullptr;
 
 static std::string				GamePath;
 static std::filesystem::path	GameDirectory;
-static std::string				AddonInfo;
 static std::string				Message;
+
+bool IsNexusInstalled = false;
 
 bool CreateDeviceD3D(HWND hWnd);
 void CleanupDeviceD3D();
@@ -182,11 +191,6 @@ void LoadFont(ImFontAtlas* aFontAtlas, float aFontSize, unsigned aResourceID, Im
 	*aOutFont = aFontAtlas->AddFontFromMemoryTTF(res, sz, aFontSize);
 }
 
-struct FileInfo
-{
-	std::string ProductName;
-	std::string Description;
-};
 FileInfo GetFileInfo(std::filesystem::path aPath)
 {
 	FileInfo fi{};
@@ -280,7 +284,79 @@ void MoveNexusCompatibleToAddons(std::filesystem::path aDirectory)
 	}
 }
 
-bool IsNexusInstalled = false;
+enum class EAddon
+{
+	None,
+	AddonLoader,
+	ArcDPS,
+	Nexus,
+	ReShade,
+	Other
+};
+
+
+std::filesystem::path addonLoader;
+std::filesystem::path d3d11;
+std::filesystem::path d3d11_chainload;
+std::filesystem::path dxgi;
+std::filesystem::path bin64dxgi;
+std::filesystem::path bin64cefdxgi;
+
+EAddon ADDONLOADER		= EAddon::None;
+EAddon D3D11			= EAddon::None;
+EAddon D3D11_CL			= EAddon::None;
+EAddon DXGI				= EAddon::None;
+EAddon DXGI_B64			= EAddon::None;
+EAddon DXGI_B64_CEF		= EAddon::None;
+
+EAddon GetAddonType(std::filesystem::path aPath)
+{
+	if (!std::filesystem::exists(aPath))
+	{
+		return EAddon::None;
+	}
+
+	FileInfo fileInfo = GetFileInfo(aPath);
+
+	if (fileInfo.ProductName == "ReShade")
+	{
+		return EAddon::ReShade;
+	}
+	
+	if (fileInfo.Description == "arcdps")
+	{
+		return EAddon::ArcDPS;
+	}
+	
+	if (fileInfo.ProductName == "Nexus")
+	{
+		return EAddon::Nexus;
+	}
+
+	uintmax_t fileSize = std::filesystem::file_size(aPath);
+
+	if (fileSize < 50000)
+	{
+		// probably addon loader.
+		// unfortunately, it sets fuck all, so we cannot read file info or exports
+		return EAddon::AddonLoader;
+	}
+
+	return EAddon::Other;
+}
+std::string GetAddonTypeMsg(EAddon aType)
+{
+	switch (aType)
+	{
+	case EAddon::None: return "";
+
+	case EAddon::AddonLoader:	return "Addon Loader";;
+	case EAddon::ArcDPS:		return "ArcDPS";;
+	case EAddon::Nexus:			return "Nexus";;
+	case EAddon::ReShade:		return "ReShade";;
+	case EAddon::Other:			return "Unknown";;
+	}
+}
 
 // taken from: https://stackoverflow.com/questions/34065/how-to-read-a-value-from-the-windows-registry
 void GetExecutablePath()
@@ -328,107 +404,58 @@ void DetectAddons()
 {
 	IsNexusInstalled = false;
 
-	std::filesystem::path d3d11				= GameDirectory / "d3d11.dll";
-	std::filesystem::path d3d11_chainload	= GameDirectory / "d3d11_chainload.dll";
-	std::filesystem::path dxgi				= GameDirectory / "dxgi.dll";
-	std::filesystem::path bin64dxgi			= GameDirectory / "bin64/dxgi.dll";
-	std::filesystem::path bin64cefdxgi		= GameDirectory / "bin64/cef/dxgi.dll";
-	std::filesystem::path addonLoader		= GameDirectory / "addonLoader.dll";
+	addonLoader		= GameDirectory / "addonLoader.dll";
+	d3d11			= GameDirectory / "d3d11.dll";
+	d3d11_chainload	= GameDirectory / "d3d11_chainload.dll";
+	dxgi			= GameDirectory / "dxgi.dll";
+	bin64dxgi		= GameDirectory / "bin64/dxgi.dll";
+	bin64cefdxgi	= GameDirectory / "bin64/cef/dxgi.dll";
+
+	ADDONLOADER		= GetAddonType(addonLoader);
+	D3D11			= GetAddonType(d3d11);
+	D3D11_CL		= GetAddonType(d3d11_chainload);
+	DXGI			= GetAddonType(dxgi);
+	DXGI_B64		= GetAddonType(bin64dxgi);
+	DXGI_B64_CEF	= GetAddonType(bin64cefdxgi);
 
 	std::string addonInfo = "";
 
-	if (std::filesystem::exists(d3d11))
+	if (D3D11 == EAddon::Nexus)
 	{
-		addonInfo += d3d11.string() + "\n";
-
-		FileInfo fileInfo = GetFileInfo(d3d11);
-		if (fileInfo.ProductName == "Nexus")
-		{
-			IsNexusInstalled = true;
-			Message = "Nexus is already installed.";
-		}
+		IsNexusInstalled = true;
+		Message = "Nexus is already installed.";
 	}
-	if (std::filesystem::exists(d3d11_chainload))
-	{
-		addonInfo += d3d11_chainload.string() + "\n";
-
-		FileInfo fileInfo = GetFileInfo(d3d11_chainload);
-		if (fileInfo.ProductName == "Nexus")
-		{
-			IsNexusInstalled = true;
-			Message = "Nexus is already installed.";
-		}
-	}
-	if (std::filesystem::exists(dxgi)) { addonInfo += dxgi.string() + "\n"; }
-	if (std::filesystem::exists(bin64dxgi)) { addonInfo += bin64dxgi.string() + "\n"; }
-	if (std::filesystem::exists(bin64cefdxgi)) { addonInfo += bin64cefdxgi.string() + "\n"; }
-	if (std::filesystem::exists(addonLoader)) { addonLoader += d3d11.string() + "\n"; }
-
-	if (addonInfo == "")
-	{
-		addonInfo = "No modifications installed.";
-	}
-
-	AddonInfo = addonInfo;
 }
 
 bool Install()
 {
-	std::filesystem::path d3d11 = GameDirectory / "d3d11.dll";
-	std::filesystem::path d3d11_chainload = GameDirectory / "d3d11_chainload.dll";
-	std::filesystem::path dxgi = GameDirectory / "dxgi.dll";
-	std::filesystem::path bin64dxgi = GameDirectory / "bin64/dxgi.dll";
-	std::filesystem::path bin64cefdxgi = GameDirectory / "bin64/cef/dxgi.dll";
-	std::filesystem::path addonLoader = GameDirectory / "addonLoader.dll";
-
-	// move addonloader/arcdps/any other d3d11 wrapper
-	if (std::filesystem::exists(addonLoader))
+	if (D3D11 == EAddon::AddonLoader)
 	{
-		// FriendlyFire's addon loader does not chainload, so we just prompt to delete it
-		if (std::filesystem::exists(d3d11_chainload))
+		/* FriendlyFire's addon loader does not chainload, we delete this file it is garbage. */
+		if (D3D11_CL != EAddon::None)
 		{
-			int dr = MessageBox(NULL, "Unused d3d11_chainload found. Delete?", "Delete chainload?", MB_YESNO);
-
-			if (dr == IDYES)
-			{
-				std::filesystem::remove(d3d11_chainload);
-			}
-			else
-			{
-				std::filesystem::rename(d3d11_chainload, d3d11_chainload.string() + ".old");
-			}
+			std::filesystem::remove(d3d11_chainload);
 		}
 
-		// move FF's AL's d3d11 to chainload
 		std::filesystem::rename(d3d11, d3d11_chainload);
 	}
-	else if (std::filesystem::exists(d3d11))
+	else if (D3D11 == EAddon::ArcDPS)
 	{
-		FileInfo fileInfo = GetFileInfo(d3d11);
-
-		if (!std::filesystem::exists(GameDirectory / "addons"))
-		{
-			std::filesystem::create_directory(GameDirectory / "addons");
-		}
-
-		if (fileInfo.ProductName == "ReShade")
-		{
-			std::filesystem::rename(d3d11, dxgi);
-		}
-		else if (fileInfo.Description == "arcdps")
-		{
-			// move arcdps to addons to be loaded by Nexus
-			std::filesystem::rename(d3d11, GameDirectory / "addons/arcdps.dll");
-		}
-		else if (fileInfo.ProductName == "Nexus")
-		{
-			Message = "Nexus is already installed.";
-			return false;
-		}
-		else
-		{
-			std::filesystem::rename(d3d11, d3d11_chainload);
-		}
+		/* move arcdps to addons to be loaded by Nexus*/
+		std::filesystem::rename(d3d11, GameDirectory / "addons/arcdps.dll");
+	}
+	else if (D3D11 == EAddon::ReShade)
+	{
+		std::filesystem::rename(d3d11, dxgi);
+	}
+	else if (D3D11 == EAddon::Nexus)
+	{
+		Message = "Nexus is already installed.";
+		return false;
+	}
+	else
+	{
+		std::filesystem::rename(d3d11, d3d11_chainload);
 	}
 
 	// Install Nexus
@@ -486,7 +513,23 @@ bool Install()
 	MoveNexusCompatibleToAddons(GameDirectory);
 	MoveNexusCompatibleToAddons(GameDirectory / "bin64");
 
+	DetectAddons();
+
 	return true;
+}
+
+void AddonInfoRow(EAddon aType, std::filesystem::path aPath)
+{
+	if (aType != EAddon::None)
+	{
+		ImGui::TableNextRow();
+		ImGui::TableSetColumnIndex(1);
+		ImGui::PushFont(BoldFont);
+		ImGui::TextColored(ImVec4(1, 1, 1, 1), GetAddonTypeMsg(aType).c_str());
+		ImGui::PopFont();
+		ImGui::TableSetColumnIndex(2);
+		ImGui::TextColored(ImVec4(1, 1, 1, 1), aPath.string().c_str());
+	}
 }
 
 #pragma comment(linker, "/SUBSYSTEM:windows /ENTRY:mainCRTStartup")
@@ -529,8 +572,8 @@ int main()
 
 	LoadFromResource(TEX_BACKGROUND, &Background);
 
-	ImFont* baseFont; LoadFont(io.Fonts, 20.0f, MAINFONT, &baseFont);
-	ImFont* boldFont; LoadFont(io.Fonts, 20.0f, MAINFONT_BOLD, &boldFont);
+	LoadFont(io.Fonts, 20.0f, MAINFONT, &Font);
+	LoadFont(io.Fonts, 20.0f, MAINFONT_BOLD, &BoldFont);
 	io.Fonts->Build();
 
 	ImVec4 clear_color = ImVec4(0, 0, 0, 0);
@@ -585,7 +628,7 @@ int main()
 				{
 					ImGui::SetCursorPos(ImVec2(8.0f, 8.0f));
 
-					ImGui::PushFont(boldFont);
+					ImGui::PushFont(BoldFont);
 					ImGui::TextColored(ImVec4(1, 1, 1, 1), "Game Location:");
 					ImGui::PopFont();
 
@@ -601,7 +644,7 @@ int main()
 					ImGui::SameLine();
 
 					ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 8.0f));
-					ImGui::PushFont(boldFont);
+					ImGui::PushFont(BoldFont);
 					if (ImGui::SmallButton("Locate Game"))
 					{
 						OPENFILENAME ofn{};
@@ -626,16 +669,26 @@ int main()
 					ImGui::PopFont();
 					ImGui::PopStyleVar();
 
-					ImGui::PushFont(boldFont);
+					ImGui::PushFont(BoldFont);
 					ImGui::TextColored(ImVec4(1, 1, 1, 1), "Detected Modifcations:");
 					ImGui::PopFont();
-					ImGui::TextColored(ImVec4(0.863f, 0.863f, 0.863f, 1), AddonInfo.c_str());
+
+					ImGui::BeginTable("##addoninfo", 3, ImGuiTableFlags_SizingFixedFit);
+
+					AddonInfoRow(ADDONLOADER, addonLoader);
+					AddonInfoRow(D3D11, d3d11);
+					AddonInfoRow(D3D11_CL, d3d11_chainload);
+					AddonInfoRow(DXGI, dxgi);
+					AddonInfoRow(DXGI_B64, bin64dxgi);
+					AddonInfoRow(DXGI_B64_CEF, bin64cefdxgi);
+					
+					ImGui::EndTable();
 				}
 				ImGui::EndChild();
 				ImGui::PopStyleColor();
 				ImGui::PopStyleVar();
 
-				ImGui::PushFont(boldFont);
+				ImGui::PushFont(BoldFont);
 
 				ImGui::SetCursorPos(ImVec2(16.0f, wndHeight - btnHeight - 8.0f - (ImGui::GetTextLineHeight() * 2)));
 				ImGui::TextColored(ImVec4(0, 1, 0, 1), Message.c_str());
@@ -645,11 +698,8 @@ int main()
 				{
 					if (!IsNexusInstalled)
 					{
-						bool didInstall = Install();
-						DetectAddons();
-
 						// this little jank is to overwrite the "is ALREADY installed" message
-						if (didInstall)
+						if (Install())
 						{
 							IsNexusInstalled = true;
 							Message = "Succesfully installed Nexus.";
@@ -691,8 +741,6 @@ int main()
 	return 0;
 }
 
-// Helper functions
-
 bool CreateDeviceD3D(HWND hWnd)
 {
 	// Setup swap chain
@@ -733,7 +781,6 @@ bool CreateDeviceD3D(HWND hWnd)
 	CreateRenderTarget();
 	return true;
 }
-
 void CleanupDeviceD3D()
 {
 	CleanupRenderTarget();
@@ -741,7 +788,6 @@ void CleanupDeviceD3D()
 	if (DeviceContext) { DeviceContext->Release(); DeviceContext = NULL; }
 	if (Device) { Device->Release(); Device = NULL; }
 }
-
 void CreateRenderTarget()
 {
 	ID3D11Texture2D* pBackBuffer;
@@ -749,7 +795,6 @@ void CreateRenderTarget()
 	Device->CreateRenderTargetView(pBackBuffer, NULL, &RenderTargetView);
 	pBackBuffer->Release();
 }
-
 void CleanupRenderTarget()
 {
 	if (RenderTargetView) { RenderTargetView->Release(); RenderTargetView = NULL; }
