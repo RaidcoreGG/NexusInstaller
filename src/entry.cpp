@@ -54,7 +54,6 @@ bool FindFunction(HMODULE aModule, LPVOID aFunction, LPCSTR aName)
 	*fp = aModule ? GetProcAddress(aModule, aName) : 0;
 	return (*fp != 0);
 }
-
 bool LoadFromResource(unsigned aResourceID, Texture** aOutTexture)
 {
 	HRSRC imageResHandle = FindResourceA(GetModuleHandle(NULL), MAKEINTRESOURCEA(aResourceID), "PNG");
@@ -138,6 +137,150 @@ bool LoadFromResource(unsigned aResourceID, Texture** aOutTexture)
 
 	stbi_image_free(image_data);
 }
+void LoadFont(ImFontAtlas* aFontAtlas, float aFontSize, unsigned aResourceID, ImFont** aOutFont)
+{
+	if (!aFontAtlas)
+	{
+		return;
+	}
+
+	*aOutFont = nullptr;
+
+	LPVOID res{};
+	DWORD sz{};
+
+	HRSRC hRes = FindResource(GetModuleHandle(NULL), MAKEINTRESOURCE(aResourceID), RT_FONT);
+	if (!hRes)
+	{
+		return;
+	}
+
+	HGLOBAL hLRes = LoadResource(GetModuleHandle(NULL), hRes);
+
+	if (!hLRes)
+	{
+		return;
+	}
+
+	LPVOID pLRes = LockResource(hLRes);
+
+	if (!pLRes)
+	{
+		return;
+	}
+
+	DWORD dwResSz = SizeofResource(GetModuleHandle(NULL), hRes);
+
+	if (!dwResSz)
+	{
+		return;
+	}
+
+	res = pLRes;
+	sz = dwResSz;
+
+	*aOutFont = aFontAtlas->AddFontFromMemoryTTF(res, sz, aFontSize);
+}
+
+struct FileInfo
+{
+	std::string ProductName;
+	std::string Description;
+};
+FileInfo GetFileInfo(std::filesystem::path aPath)
+{
+	FileInfo fi{};
+
+	DWORD fviSz = GetFileVersionInfoSizeA(aPath.string().c_str(), 0);
+	char* buffer = new char[fviSz];
+	GetFileVersionInfoA(aPath.string().c_str(), 0, fviSz, buffer);
+
+	struct LANGANDCODEPAGE
+	{
+		WORD wLanguage;
+		WORD wCodePage;
+	} *lpTranslate;
+
+	UINT cbTranslate = 0;
+	if (!VerQueryValue(buffer, "\\VarFileInfo\\Translation", (LPVOID*)&lpTranslate, &cbTranslate))
+	{
+		return fi;
+	}
+	for (unsigned int i = 0; i < (cbTranslate / sizeof(LANGANDCODEPAGE)); i++)
+	{
+		char subblock[256];
+		//use sprintf if sprintf_s is not available
+		sprintf_s(subblock, "\\StringFileInfo\\%04x%04x\\FileDescription",
+			lpTranslate[i].wLanguage, lpTranslate[i].wCodePage);
+		char* description = NULL;
+		UINT dwBytes;
+		if (VerQueryValue(buffer, subblock, (LPVOID*)&description, &dwBytes))
+		{
+			fi.Description = description;
+		}
+	}
+	for (unsigned int i = 0; i < (cbTranslate / sizeof(LANGANDCODEPAGE)); i++)
+	{
+		char subblock[256];
+		//use sprintf if sprintf_s is not available
+		sprintf_s(subblock, "\\StringFileInfo\\%04x%04x\\ProductName",
+			lpTranslate[i].wLanguage, lpTranslate[i].wCodePage);
+		char* description = NULL;
+		UINT dwBytes;
+		if (VerQueryValue(buffer, subblock, (LPVOID*)&description, &dwBytes))
+		{
+			fi.ProductName = description;
+		}
+	}
+
+	return fi;
+}
+
+bool IsNexusAddon(std::filesystem::path aPath)
+{
+	bool ret = false;
+
+	HMODULE hMod = LoadLibrary(aPath.string().c_str());
+
+	if (hMod)
+	{
+		FARPROC getAddonDef = GetProcAddress(hMod, "GetAddonDef");
+
+		if (getAddonDef)
+		{
+			ret = true;
+		}
+
+		FreeLibrary(hMod);
+	}
+
+	return ret;
+}
+void MoveNexusCompatibleToAddons(std::filesystem::path aDirectory)
+{
+	if (!std::filesystem::exists(aDirectory)) { return; }
+
+	for (const std::filesystem::directory_entry entry : std::filesystem::directory_iterator(aDirectory))
+	{
+		std::filesystem::path dllPath = entry.path();
+
+		if (dllPath.extension() != ".dll") { continue; }
+
+		if (String::Contains(dllPath.string(), "CoherentUI64.dll")) { continue; }
+		if (String::Contains(dllPath.string(), "d3dcompiler_43.dll")) { continue; }
+		if (String::Contains(dllPath.string(), "ffmpegsumo.dll")) { continue; }
+		if (String::Contains(dllPath.string(), "icudt.dll")) { continue; }
+		if (String::Contains(dllPath.string(), "libEGL.dll")) { continue; }
+		if (String::Contains(dllPath.string(), "libGLESv2.dll")) { continue; }
+
+		if (IsNexusAddon(dllPath))
+		{
+			std::filesystem::rename(dllPath, GameDirectory / "addons" / dllPath.filename());
+		}
+	}
+}
+
+bool IsNexusInstalled = false;
 
 // taken from: https://stackoverflow.com/questions/34065/how-to-read-a-value-from-the-windows-registry
 void GetExecutablePath()
@@ -183,17 +326,39 @@ bool UnblockFile(std::filesystem::path aFileName)
 
 void DetectAddons()
 {
-	std::filesystem::path d3d11 = GameDirectory / "d3d11.dll";
-	std::filesystem::path d3d11_chainload = GameDirectory / "d3d11_chainload.dll";
-	std::filesystem::path dxgi = GameDirectory / "dxgi.dll";
-	std::filesystem::path bin64dxgi = GameDirectory / "bin64/dxgi.dll";
-	std::filesystem::path bin64cefdxgi = GameDirectory / "bin64/cef/dxgi.dll";
-	std::filesystem::path addonLoader = GameDirectory / "addonLoader.dll";
+	IsNexusInstalled = false;
+
+	std::filesystem::path d3d11				= GameDirectory / "d3d11.dll";
+	std::filesystem::path d3d11_chainload	= GameDirectory / "d3d11_chainload.dll";
+	std::filesystem::path dxgi				= GameDirectory / "dxgi.dll";
+	std::filesystem::path bin64dxgi			= GameDirectory / "bin64/dxgi.dll";
+	std::filesystem::path bin64cefdxgi		= GameDirectory / "bin64/cef/dxgi.dll";
+	std::filesystem::path addonLoader		= GameDirectory / "addonLoader.dll";
 
 	std::string addonInfo = "";
 
-	if (std::filesystem::exists(d3d11)) { addonInfo += d3d11.string() + "\n"; }
-	if (std::filesystem::exists(d3d11_chainload)) { addonInfo += d3d11_chainload.string() + "\n"; }
+	if (std::filesystem::exists(d3d11))
+	{
+		addonInfo += d3d11.string() + "\n";
+
+		FileInfo fileInfo = GetFileInfo(d3d11);
+		if (fileInfo.ProductName == "Nexus")
+		{
+			IsNexusInstalled = true;
+			Message = "Nexus is already installed.";
+		}
+	}
+	if (std::filesystem::exists(d3d11_chainload))
+	{
+		addonInfo += d3d11_chainload.string() + "\n";
+
+		FileInfo fileInfo = GetFileInfo(d3d11_chainload);
+		if (fileInfo.ProductName == "Nexus")
+		{
+			IsNexusInstalled = true;
+			Message = "Nexus is already installed.";
+		}
+	}
 	if (std::filesystem::exists(dxgi)) { addonInfo += dxgi.string() + "\n"; }
 	if (std::filesystem::exists(bin64dxgi)) { addonInfo += bin64dxgi.string() + "\n"; }
 	if (std::filesystem::exists(bin64cefdxgi)) { addonInfo += bin64cefdxgi.string() + "\n"; }
@@ -207,7 +372,7 @@ void DetectAddons()
 	AddonInfo = addonInfo;
 }
 
-void Install()
+bool Install()
 {
 	std::filesystem::path d3d11 = GameDirectory / "d3d11.dll";
 	std::filesystem::path d3d11_chainload = GameDirectory / "d3d11_chainload.dll";
@@ -239,71 +404,26 @@ void Install()
 	}
 	else if (std::filesystem::exists(d3d11))
 	{
-		std::string fileDescription, productName;
-
-		DWORD fviSz = GetFileVersionInfoSizeA(d3d11.string().c_str(), 0);
-		char* buffer = new char[fviSz];
-		GetFileVersionInfoA(d3d11.string().c_str(), 0, fviSz, buffer);
-
-		struct LANGANDCODEPAGE
-		{
-			WORD wLanguage;
-			WORD wCodePage;
-		} *lpTranslate;
-
-		UINT cbTranslate = 0;
-		if (!VerQueryValue(buffer, "\\VarFileInfo\\Translation", (LPVOID*)&lpTranslate, &cbTranslate))
-		{
-			return;
-		}
-		for (unsigned int i = 0; i < (cbTranslate / sizeof(LANGANDCODEPAGE)); i++)
-		{
-			char subblock[256];
-			//use sprintf if sprintf_s is not available
-			sprintf_s(subblock, "\\StringFileInfo\\%04x%04x\\FileDescription",
-				lpTranslate[i].wLanguage, lpTranslate[i].wCodePage);
-			char* description = NULL;
-			UINT dwBytes;
-			if (VerQueryValue(buffer, subblock, (LPVOID*)&description, &dwBytes))
-			{
-				fileDescription = description;
-			}
-		}
-		for (unsigned int i = 0; i < (cbTranslate / sizeof(LANGANDCODEPAGE)); i++)
-		{
-			char subblock[256];
-			//use sprintf if sprintf_s is not available
-			sprintf_s(subblock, "\\StringFileInfo\\%04x%04x\\ProductName",
-				lpTranslate[i].wLanguage, lpTranslate[i].wCodePage);
-			char* description = NULL;
-			UINT dwBytes;
-			if (VerQueryValue(buffer, subblock, (LPVOID*)&description, &dwBytes))
-			{
-				productName = description;
-			}
-		}
+		FileInfo fileInfo = GetFileInfo(d3d11);
 
 		if (!std::filesystem::exists(GameDirectory / "addons"))
 		{
 			std::filesystem::create_directory(GameDirectory / "addons");
 		}
 
-		if (productName == "ReShade")
+		if (fileInfo.ProductName == "ReShade")
 		{
 			std::filesystem::rename(d3d11, dxgi);
 		}
-		else if (fileDescription == "arcdps")
+		else if (fileInfo.Description == "arcdps")
 		{
 			// move arcdps to addons to be loaded by Nexus
 			std::filesystem::rename(d3d11, GameDirectory / "addons/arcdps.dll");
 		}
-		else if (productName == "Nexus")
+		else if (fileInfo.ProductName == "Nexus")
 		{
-			int dr = MessageBoxA(NULL, "Nexus is already installed!", "Info", 0);
-			if (dr == IDOK)
-			{
-				return;
-			}
+			Message = "Nexus is already installed.";
+			return false;
 		}
 		else
 		{
@@ -344,7 +464,7 @@ void Install()
 			CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 
 		if (INVALID_HANDLE_VALUE == hFile) {
-			return;
+			return false;
 		}
 
 		for (; dwBytesRead > 0;)
@@ -360,58 +480,13 @@ void Install()
 		CloseHandle(hFile);
 	}
 
-	//UnblockFile(d3d11);
+	UnblockFile(d3d11);
 
 	// Move all detected Nexus addons to /addons
-	for (const std::filesystem::directory_entry entry : std::filesystem::directory_iterator(GameDirectory))
-	{
-		std::filesystem::path dllPath = entry.path();
+	MoveNexusCompatibleToAddons(GameDirectory);
+	MoveNexusCompatibleToAddons(GameDirectory / "bin64");
 
-		if (dllPath.extension() != ".dll") { continue; }
-
-		HMODULE hMod = LoadLibrary(dllPath.string().c_str()); // this is cursed
-
-		if (hMod)
-		{
-			FARPROC getAddonDef = GetProcAddress(hMod, "GetAddonDef");
-
-			if (getAddonDef)
-			{
-				std::filesystem::rename(dllPath, GameDirectory / "addons" / dllPath.filename());
-			}
-
-			FreeLibrary(hMod);
-		}
-	}
-	for (const std::filesystem::directory_entry entry : std::filesystem::directory_iterator(GameDirectory))
-	{
-		std::filesystem::path dllPath = entry.path();
-
-		if (dllPath.extension() != ".dll") { continue; }
-
-		if (String::Contains(dllPath.string(), "CoherentUI64.dll")) { continue; }
-		if (String::Contains(dllPath.string(), "d3dcompiler_43.dll")) { continue; }
-		if (String::Contains(dllPath.string(), "ffmpegsumo.dll")) { continue; }
-		if (String::Contains(dllPath.string(), "icudt.dll")) { continue; }
-		if (String::Contains(dllPath.string(), "libEGL.dll")) { continue; }
-		if (String::Contains(dllPath.string(), "libGLESv2.dll")) { continue; }
-
-		HMODULE hMod = LoadLibrary(dllPath.string().c_str()); // this is cursed
-
-		if (hMod)
-		{
-			FARPROC getAddonDef = GetProcAddress(hMod, "GetAddonDef");
-
-			if (getAddonDef)
-			{
-				std::filesystem::rename(dllPath, GameDirectory / "addons" / dllPath.filename());
-			}
-
-			FreeLibrary(hMod);
-		}
-	}
-
-	Message = "Succesfully installed Nexus.";
+	return true;
 }
 
 #pragma comment(linker, "/SUBSYSTEM:windows /ENTRY:mainCRTStartup")
@@ -446,69 +521,16 @@ int main()
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
 	ImGuiIO& io = ImGui::GetIO(); (void)io;
-	//io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
-	//io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
 
-	// Setup Dear ImGui style
 	ImGui::StyleColorsDark();
-	//ImGui::StyleColorsClassic();
 
-	// Setup Platform/Renderer backends
 	ImGui_ImplWin32_Init(hwnd);
 	ImGui_ImplDX11_Init(Device, DeviceContext);
 
-	if (!Background)
-	{
-		LoadFromResource(TEX_BACKGROUND, &Background);
-	}
+	LoadFromResource(TEX_BACKGROUND, &Background);
 
-	LPVOID res{}; DWORD sz{};
-	HRSRC hRes = FindResource(GetModuleHandle(NULL), MAKEINTRESOURCE(MAINFONT), RT_FONT);
-	if (hRes)
-	{
-		HGLOBAL hLRes = LoadResource(GetModuleHandle(NULL), hRes);
-
-		if (hLRes)
-		{
-			LPVOID pLRes = LockResource(hLRes);
-
-			if (pLRes)
-			{
-				DWORD dwResSz = SizeofResource(GetModuleHandle(NULL), hRes);
-
-				if (0 != dwResSz)
-				{
-					res = pLRes;
-					sz = dwResSz;
-				}
-			}
-		}
-	}
-	LPVOID resB{}; DWORD szB{};
-	HRSRC hResB = FindResource(GetModuleHandle(NULL), MAKEINTRESOURCE(MAINFONT_BOLD), RT_FONT);
-	if (hResB)
-	{
-		HGLOBAL hLResB = LoadResource(GetModuleHandle(NULL), hResB);
-
-		if (hLResB)
-		{
-			LPVOID pLResB = LockResource(hLResB);
-
-			if (pLResB)
-			{
-				DWORD dwResSzB = SizeofResource(GetModuleHandle(NULL), hResB);
-
-				if (0 != dwResSzB)
-				{
-					resB = pLResB;
-					szB = dwResSzB;
-				}
-			}
-		}
-	}
-
-	io.Fonts->AddFontFromMemoryTTF(res, sz, 20.0f);
-	ImFont* boldFont = io.Fonts->AddFontFromMemoryTTF(resB, szB, 20.0f);
+	ImFont* baseFont; LoadFont(io.Fonts, 20.0f, MAINFONT, &baseFont);
+	ImFont* boldFont; LoadFont(io.Fonts, 20.0f, MAINFONT_BOLD, &boldFont);
 	io.Fonts->Build();
 
 	ImVec4 clear_color = ImVec4(0, 0, 0, 0);
@@ -523,11 +545,6 @@ int main()
 	ZeroMemory(&msg, sizeof(msg));
 	while (!done && msg.message != WM_QUIT)
 	{
-		// Poll and handle messages (inputs, window resize, etc.)
-		// You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui wants to use your inputs.
-		// - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main application.
-		// - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application.
-		// Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
 		if (::PeekMessage(&msg, NULL, 0U, 0U, PM_REMOVE))
 		{
 			::TranslateMessage(&msg);
@@ -603,6 +620,8 @@ int main()
 							GameDirectory = GamePath;
 							GameDirectory = GameDirectory.parent_path();
 						}
+
+						DetectAddons();
 					}
 					ImGui::PopFont();
 					ImGui::PopStyleVar();
@@ -616,22 +635,34 @@ int main()
 				ImGui::PopStyleColor();
 				ImGui::PopStyleVar();
 
+				ImGui::PushFont(boldFont);
+
 				ImGui::SetCursorPos(ImVec2(16.0f, wndHeight - btnHeight - 8.0f - (ImGui::GetTextLineHeight() * 2)));
 				ImGui::TextColored(ImVec4(0, 1, 0, 1), Message.c_str());
 
-				ImGui::PushFont(boldFont);
 				ImGui::SetCursorPos(ImVec2(8.0f, wndHeight - btnHeight - 8.0f));
 				if (ImGui::Button("Install Nexus", ImVec2(btnWidth, btnHeight)))
 				{
-					Install();
-					DetectAddons();
+					if (!IsNexusInstalled)
+					{
+						bool didInstall = Install();
+						DetectAddons();
+
+						// this little jank is to overwrite the "is ALREADY installed" message
+						if (didInstall)
+						{
+							IsNexusInstalled = true;
+							Message = "Succesfully installed Nexus.";
+						}
+					}
 				}
-				ImGui::SameLine();
+
 				ImGui::SetCursorPos(ImVec2(wndWidth - btnWidth - 8.0f, wndHeight - btnHeight - 8.0f));
 				if (ImGui::Button("Quit", ImVec2(btnWidth, btnHeight)))
 				{
 					done = true;
 				}
+
 				ImGui::PopFont();
 			}
 			ImGui::End();
@@ -688,7 +719,7 @@ bool CreateDeviceD3D(HWND hWnd)
 
 	static PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN createDeviceAndSwapChain_func = 0;
 
-	HMODULE d3d11lib = LoadLibrary("d3d11.dll");
+	HMODULE d3d11lib = LoadLibraryExA("d3d11.dll", 0, LOAD_LIBRARY_SEARCH_SYSTEM32);
 	FindFunction(d3d11lib, &createDeviceAndSwapChain_func, "D3D11CreateDeviceAndSwapChain");
 
 	if (!createDeviceAndSwapChain_func)
