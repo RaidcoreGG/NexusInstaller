@@ -453,7 +453,7 @@ bool Install()
 		Message = "Nexus is already installed.";
 		return false;
 	}
-	else
+	else if (D3D11 == EAddon::Other)
 	{
 		std::filesystem::rename(d3d11, d3d11_chainload);
 	}
